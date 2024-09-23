@@ -63,3 +63,6 @@ CAGDP
 └── Optim.py:          # Optimization.
 
 ```
+## Contact
+
+For any questions please open an issue or drop an email to: `wywu@hdu.edu.cn`
