@@ -1,0 +1,10 @@
+numpy @ file:///croot/numpy_and_numpy_base_1708638617955/work/dist/numpy-1.26.4-cp312-cp312-linux_x86_64.whl#sha256=1d700f51d8b4fa684d858c9e3b56b1656bc5c82b6b79ff08d4e3b491c430059f
+pandas==2.2.1
+scikit-learn==1.4.1.post1
+scipy @ file:///work/perseverance-python-buildout/croot/scipy_1701734271484/work/dist/scipy-1.11.4-cp312-cp312-linux_x86_64.whl#sha256=9289920d160658418dd16cfd0f12bdea66b3fa37a45c5e8aca5e285681c014a9
+torch==2.2.1
+torchaudio==2.2.1
+torchvision==0.17.1
+tqdm==4.66.2
+transformers==4.38.2
+
