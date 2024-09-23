@@ -42,18 +42,12 @@ class HGATLayer(nn.Module):
             x = x.matmul(self.weight2)        
 
         adj_dense = adj.to_dense() if not hasattr(self, 'adj_dense') else self.adj_dense
-
-
-        # adjt = F.softmax(adj_dense.T, dim=1)
-        adjt = adj_dense.T
+        adjt = F.softmax(adj_dense.T, dim=1)
 
         edge = F.dropout(torch.matmul(adjt, x), self.dropout, training=self.training)
         edge = F.relu(edge)
 
-
-        # node = torch.matmul(adj_dense.T, edge.matmul(self.weight3))
         node = torch.matmul(adj_dense, edge.matmul(self.weight3))
-        # node = torch.matmul(F.softmax(adj_dense, dim=1), edge.matmul(self.weight3))
         node = F.dropout(node, self.dropout, training=self.training)
         if self.concat:
             node = F.relu(node)

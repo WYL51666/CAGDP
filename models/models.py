@@ -5,7 +5,6 @@ from torch import nn
 import torch.nn.functional as F
 from Optim import ScheduledOptim
 from models.HGATLayer import *
-# from models.HGCNLayer import *
 from models.TransformerBlock import *
 '''To GPU'''
 def trans_to_cuda(variable):
@@ -74,14 +73,9 @@ class Fusion(nn.Module):
             emb_score = F.softmax(self.linear2(torch.tanh(self.linear1(emb))), dim=0)
             emb_score = self.dropout(emb_score)#torch.Size([2, 64, 199, 1])
             out = torch.sum(emb_score * emb, dim=0)#torch.Size([64, 199, 64])
-        elif self.fusion_method == 'sum':
-            emb =  (hidden+ dy_emb).unsqueeze(dim=0)
-            emb_score = F.softmax(self.linear2(torch.tanh(self.linear1(emb))), dim=0)
-            emb_score = self.dropout(emb_score)#torch.Size([2, 64, 199, 1])
-            out = torch.sum(emb_score * emb, dim=0)   
         else:
 
-            raise ValueError("Unsupported fusion method. Please choose from 'sum', 'mean', 'max' or 'cat'.")
+            raise ValueError("Unsupported fusion method. Please choose from 'mean', 'max' or 'cat'.")
 
         return out
 
@@ -99,19 +93,7 @@ class GLUVariant(nn.Module):
         x = self.layer_norm(x)
         value, gate = x.chunk(2, dim=-1)
         return value * torch.relu(gate)
-class text_emb(nn.Module):
-        def __init__(self,in_size,out_size):
-            super(text_emb, self).__init__()
-
-            self.linear_text = nn.Sequential(
-                # nn.Linear(in_size, in_size//2),
-                # nn.Tanh(),
-                nn.Linear(in_size, out_size),  
-                nn.Tanh()
-            )
-        def forward(self,text2vec):   
-            text2vec = self.linear_text(text2vec)  #2048 -> 176
-            return text2vec
+    
 class Module(nn.Module):
     def __init__(self,  hypergraphs, args ,text_embedding,dropout=0.3):
         super(Module, self).__init__()
@@ -132,12 +114,7 @@ class Module(nn.Module):
         self.H_G = hypergraphs[0]   #HG
         self.H_L =hypergraphs[1] #HL
         self.gat = HGATLayer(self.emb_size,self.emb_size, dropout=dropout,transfer=False, concat=True)#0.3
-
-        self.HGAT_layers = nn.ModuleList()
-        for i in range(self.layers):
-            # self.GAT_layers.append(GATConv(in_channels = self.hidden_size, out_channels = int(self.hidden_size/self.att_head), heads = self.att_head))
-            self.HGAT_layers.append(HGATLayer(self.emb_size,self.emb_size, dropout=dropout,transfer=False, concat=True))#0.3))
-        self.past_glu = GLUVariant(self.emb_size)
+        self.glu = GLUVariant(self.emb_size)
 
         # user embedding
         self.user_embedding = nn.Embedding(self.n_node, self.emb_size, padding_idx=0)
@@ -161,15 +138,13 @@ class Module(nn.Module):
         self.att_m = nn.Parameter(torch.zeros(self.emb_size, self.emb_size))
 
         ### multi-head attention
-        self.multi_att = TransformerBlock(input_size=self.emb_size, n_heads=4, attn_dropout=dropout)####
+        self.multi_att = TransformerBlock(input_size=self.emb_size, n_heads=4, attn_dropout=dropout)
         self.past_multi_att = TransformerBlock(input_size=self.emb_size, n_heads=4, attn_dropout=dropout)
 
-        
-        self.text_emb = text_emb(768,self.emb_size)
         self.linear =  nn.Linear(in_features=768, out_features=self.emb_size)
-        # self.linear = nn.Linear(self.emb_size*2, self.emb_size)
         self.attention_norm = nn.LayerNorm(self.emb_size)
         self.reset_parameters()
+
         #### optimizer and loss function
         self.optimizerAdam = torch.optim.Adam(self.parameters(), betas=(0.9, 0.98), eps=1e-09)
         self.optimizer = ScheduledOptim(self.optimizerAdam, self.emb_size, args.n_warmup_steps, self.data_path)
@@ -222,7 +197,6 @@ class Module(nn.Module):
 
         # Global MIM
         graph = torch.mean(edge_embeddings, 0)
-        # graph = self.past_glu(edge_embeddings)
         pos = score(edge_embeddings, graph)
         neg1 = score(row_column_shuffle(edge_embeddings), graph)
         global_loss = torch.sum(-torch.log(torch.sigmoid(pos - neg1)))
@@ -238,70 +212,47 @@ class Module(nn.Module):
         g = torch.sparse_coo_tensor(indices, values, size)
         return g
 
-    def ECG(self, cas, text):
+    def CAG(self, cas, text):
         cas = self.attention_norm(cas)
         text = self.attention_norm(text)
 
         ct = self.multi_att(cas,text,text)
         tc = self.multi_att(text,cas,cas)
         cas = cas + ct
-        text =text + self.past_glu(tc)
-        # text =text + tc
+        text =text + self.glu(tc)
         return cas,text
-
-    def EC(self, cas, text):
-        cas = self.attention_norm(cas)
-        text = self.attention_norm(text)
-        ct = self.multi_att(cas,text,text)
-        tc = self.multi_att(text,cas,cas)
-        cas = cas + ct
-        text =text + tc
-        return cas,text
-    def GAU(self, cas, text):
-        cas = self.attention_norm(cas)
-        text = self.attention_norm(text)
-        ct = self.multi_att(cas,text,text)
-        tc = self.multi_att(text,cas,cas)
-        cas = cas + ct
-        text =text + tc
-        
-        return cas * torch.relu(text)
-        # return text * torch.relu(cas)
 
     '''social structure and hypergraph structure embeddding'''
     def structure_embed(self, H_Time=None, H_G=None, H_L=None):
         if self.training:
-            H_G = self._dropout_graph(self.H_G, keep_prob=1-self.drop_rate)  #####窗口us*us
-            H_L = self._dropout_graph(self.H_L, keep_prob=1-self.drop_rate)  #####所有用户us*us
+            H_G = self._dropout_graph(self.H_G, keep_prob=1-self.drop_rate) 
+            H_L = self._dropout_graph(self.H_L, keep_prob=1-self.drop_rate) 
         else:
-            H_G = self.H_G  #####所有用户
+            H_G = self.H_G 
             H_L = self.H_L
 
-        u_emb_c2 = self.self_gating(self.user_embedding.weight, 0)  ###tensor格式torch.Size([us, es])
-        u_emb_c3 = self.self_gating(self.user_embedding.weight, 1)  ###tensor格式torch.Size([us, es])  
+        u_emb_c2 = self.self_gating(self.user_embedding.weight, 0)  
+        u_emb_c3 = self.self_gating(self.user_embedding.weight, 1)  
 
-        all_emb_c2 = [u_emb_c2]  # len
+        all_emb_c2 = [u_emb_c2]  
         all_emb_c3 = [u_emb_c3]
         for k in range(self.layers):
             '''HG传播'''         
-            u_emb_c2 = self.gat(u_emb_c2, H_G) #torch.Size([us, es])
-            # u_emb_c2 = self.HGAT_layers[k](u_emb_c2, H_G) #torch.Size([us, es])
-            u_emb_c3 = torch.sparse.mm(H_L, u_emb_c3)###########
-            norm_embeddings2 = F.normalize(u_emb_c2, p=2, dim=1)####torch.Size([us, es])
+            u_emb_c2 = self.gat(u_emb_c2, H_G) 
+            u_emb_c3 = torch.sparse.mm(H_L, u_emb_c3)
+            norm_embeddings2 = F.normalize(u_emb_c2, p=2, dim=1)
             all_emb_c2 += [norm_embeddings2]
 
             norm_embeddings3 = F.normalize(u_emb_c3, p=2, dim=1)
             all_emb_c3 += [norm_embeddings3]
-        u_emb_c22 = torch.stack(all_emb_c2, dim=1)  ####torch.Size([us, 4, es])
-        u_emb_c33 = torch.stack(all_emb_c3, dim=1)  # torch.Size([us, 4, es])
+        u_emb_c22 = torch.stack(all_emb_c2, dim=1) 
+        u_emb_c33 = torch.stack(all_emb_c3, dim=1) 
 
-        u_emb_c2 = torch.sum(u_emb_c22, dim=1)  #######torch.Size([us, es])
-        u_emb_c3 = torch.sum(u_emb_c33, dim=1)  # torch.Size([us, es])
+        u_emb_c2 = torch.sum(u_emb_c22, dim=1)  
+        u_emb_c3 = torch.sum(u_emb_c33, dim=1)  
 
         # aggregating channel-specific embeddings
-        high_embs = self.channel_attention(u_emb_c2, u_emb_c3)  #####torch.Size([us,es])
-        # return u_emb_c3#HL
-        # return u_emb_c2#HG
+        high_embs = self.channel_attention(u_emb_c2, u_emb_c3) 
         return high_embs
 
     def forward(self, input):
@@ -311,61 +262,37 @@ class Module(nn.Module):
             Text_emb= self.linear(self.text_embedding)
             '''structure embeddding'''
             HG_Uemb = self.structure_embed()
-
-
             '''text_emb++++++++++++++++++++++++++++++++'''  
             text_emb = F.embedding(input, Text_emb).float()
             '''past cascade embeddding'''
             cas_seq_emb = F.embedding(input, HG_Uemb)
-            '''bi_att1'''
-            cas_seq_embs,text_embs = self.ECG(cas_seq_emb,text_emb)
-            user_cas_glu= self.past_glu(cas_seq_embs)
-            Cs = self.multi_att(user_cas_glu,cas_seq_embs,cas_seq_embs,mask= mask.cuda())
-            '''fuse'''
+
+            '''CAG'''
+            cas_seq_embs,text_embs = self.CAG(cas_seq_emb,text_emb)
+            '''CE'''
+            cas_glu= self.glu(cas_seq_embs)
+            CE = self.multi_att(cas_glu,cas_seq_embs,cas_seq_embs,mask= mask.cuda())
             cas_seq_with_text_emb = self.fuse(cas_seq_embs,text_embs) 
-
-            # cas_seq_with_text_emb = cas_seq_embs* torch.relu(text_embs) 
-
-            '''w/o biatt1'''
-            # user_cas_glu= self.past_glu(cas_seq_emb)
-            # Cs = self.multi_att(user_cas_glu,cas_seq_emb,cas_seq_emb,mask= mask.cuda())
-            # cas_seq_with_text_emb = self.fuse(cas_seq_emb,text_emb)
-
-            '''  biatt2'''
-            # Cs,cas_seq_with_text_emb = self.ECG(cas_seq_embs,cas_seq_with_text_emb)
-            Cs,cas_seq_with_text_emb = self.ECG(Cs,cas_seq_with_text_emb)
-
-            ECS = self.fuse(Cs,cas_seq_with_text_emb)
-            # ECS =  Cs* torch.relu(cas_seq_with_text_emb)
-
-
-
-
-            # user_cas_glu= self.past_glu(cas_seq_emb)
-            # Cs = self.multi_att(user_cas_glu,cas_seq_emb,cas_seq_emb,mask= mask.cuda()) 
-            # cas_seq_with_text_emb = self.GAU(cas_seq_emb,text_emb)  
-            # ECS = self.GAU(Cs,cas_seq_with_text_emb)
-
-
+            '''CAG'''
+            CEs,cas_seq_with_text_emb = self.CAG(CE,cas_seq_with_text_emb)
+            ECS = self.fuse(CEs,cas_seq_with_text_emb)
             '''ATT'''
             output = self.past_multi_att(ECS,ECS,ECS, mask)
-
             '''SSL loss'''
             graph_ssl_loss = self.hierarchical_ssl(self.self_supervised_gating(HG_Uemb, 0), self.H_G)
             graph_ssl_loss += self.hierarchical_ssl(self.self_supervised_gating(HG_Uemb, 1), self.H_L)
 
-        else:#无文本和双向注意力
+        else:
             '''structure embeddding'''
             HG_Uemb = self.structure_embed()
             '''past cascade embeddding'''
             cas_seq_emb = F.embedding(input, HG_Uemb)
-            user_cas_glu= self.past_glu(cas_seq_emb)
 
-            Cs = self.multi_att(user_cas_glu,cas_seq_emb,cas_seq_emb,mask= mask.cuda())
+            cas_glu= self.glu(cas_seq_emb)
+            CE = self.multi_att(cas_glu,cas_seq_emb,cas_seq_emb,mask= mask.cuda())
             '''biatt'''
-            Css,cas_seq_embs = self.ECG(Cs,cas_seq_emb)#BETTER
-            
-            ECS = self.fuse(Css,cas_seq_embs)
+            CEs,cas_seq_embs = self.CAG(CE,cas_seq_emb)
+            ECS = self.fuse(CEs,cas_seq_embs)
             '''ATT'''
             output = self.past_multi_att(ECS,ECS,ECS, mask)
             '''SSL loss'''

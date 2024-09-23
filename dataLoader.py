@@ -1,8 +1,4 @@
-import math
-import random
 import numpy as np
-import torch
-from torch.autograd import Variable
 import Constants
 import pickle
 from torch.utils.data import Dataset
@@ -13,7 +9,6 @@ class Options(object):
         self.data = 'data/' + data_name + '/cascades.txt'
         self.u2idx_dict = 'data/' + data_name + '/u2idx.pickle'
         self.idx2u_dict = 'data/' + data_name + '/idx2u.pickle'
-        self.net_data = 'data/' + data_name + '/edges.txt'
 
         # train file path.
         self.train_data = 'data/' + data_name + '/cascadetrain.txt'
